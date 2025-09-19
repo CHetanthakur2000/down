@@ -39,8 +39,8 @@ def trim_video_ffmpeg(input_path, output_path, start, end):
 
 # ---------------- CONFIG ----------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 # change to your admin Telegram id
 # Make sure environment variable GOOGLE_APPLICATION_CREDENTIALS is set to service account JSON path
 
@@ -78,7 +78,19 @@ def safe_filename(name: str, max_len=120) -> str:
     return name
 def upload_to_channel(file_path, title, duration, chat_id, size_mb):
     try:
-        print(f"Uploading {file_path} to channel...")
+        print(f"Uploading {file_path} to channel... Size: {size_mb}MB")
+        
+        # Check file size BEFORE attempting upload - prevent 413 errors
+        if size_mb > 2000:  # 2GB is Telegram's absolute maximum
+            bot.send_message(chat_id, f"❌ File too large ({int(size_mb)}MB). Maximum: 2GB. Try shorter video or lower quality.")
+            return
+        elif size_mb > 50:  # Warn for large files  
+            bot.send_message(chat_id, f"⚠️ Large file ({int(size_mb)}MB) - uploading to channel...")
+        # Check if file still exists (prevent race condition with cleanup)
+        if not os.path.exists(file_path):
+            bot.send_message(chat_id, f"❌ File no longer available. Please try downloading again.")
+            return
+            
         with open(file_path, "rb") as vf:
             msg = bot.send_video(
                 CHANNEL_ID,
@@ -91,10 +103,17 @@ def upload_to_channel(file_path, title, duration, chat_id, size_mb):
             f"⚠️ File too big ({int(size_mb)}MB).\n📺 Watch/Download here:\n"
             f"https://t.me/c/{str(CHANNEL_ID)[4:]}/{msg.message_id}"
         )
-        threading.Timer(3600, lambda: bot.delete_message(CHANNEL_ID, msg.message_id)).start()
+        # Auto-delete after 2 hours (7200 seconds) for better access time
+        threading.Timer(7200, lambda: bot.delete_message(CHANNEL_ID, msg.message_id)).start()
     except Exception as e:
         print(f"upload_to_channel error: {e}")
-        bot.send_message(chat_id, f"❌ Failed to upload large file: {e}")
+        error_msg = str(e)
+        if "413" in error_msg or "Request Entity Too Large" in error_msg:
+            bot.send_message(chat_id, f"❌ File too large for Telegram ({int(size_mb)}MB). Try shorter video or lower quality.")
+        elif "timeout" in error_msg.lower():
+            bot.send_message(chat_id, f"⏰ Upload timeout. Try again later or use smaller file.")
+        else:
+            bot.send_message(chat_id, f"❌ Upload failed: {error_msg}")
 
 
 # ---------- /start and /upgrade ----------
